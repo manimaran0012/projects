@@ -1,0 +1,177 @@
+#include <Wire.h>
+#include <ACS712.h>  // Include ACS712 library
+#include <Firebase.h>  // Include Firebase library
+#include <WiFi.h>  // Include the WiFi library for ESP32
+
+// Firebase database URL
+#define FIREBASE_URL "https://chargepilot-1949b-default-rtdb.firebaseio.com/"
+Firebase fb(FIREBASE_URL);
+
+// Motor control pins
+#define IN1 25  
+#define IN2 26  
+#define IN3 27  
+#define IN4 14  
+#define ENA 32  
+#define ENB 33  
+
+// Voltage and Current sensor pins
+#define VOLTAGE_SENSOR_PIN 34
+#define CURRENT_SENSOR_PIN 35
+
+// Corrected Voltage Divider Scaling Factor (for R1=30k, R2=7.5k)
+#define VOLTAGE_SCALING_FACTOR 5.40  // Adjusted for better accuracy
+#define BATTERY_FULL_VOLTAGE 12.6
+#define BATTERY_EMPTY_VOLTAGE 9.0
+
+// ACS712-5A Sensor Configuration
+#define ACS712_SENSITIVITY 0.180  // 185mV per A
+#define ACS712_ZERO 2.00         // Adjusted zero offset for accuracy
+
+// Overcurrent limit
+#define OVERCURRENT_LIMIT 3.5  
+
+// Wi-Fi credentials
+const char* ssid = "Deepak' s device";        // Replace with your WiFi SSID 
+const char* password = "Deepak@123";          // Replace with your WiFi password
+
+void setup() {
+    Serial.begin(115200);
+    
+    // Connect to Wi-Fi
+    Serial.println("Connecting to Wi-Fi...");
+    WiFi.begin(ssid, password);
+
+    // Wait for connection
+    while (WiFi.status() != WL_CONNECTED) {
+        delay(1000);
+        Serial.println("Connecting...");
+    }
+
+    Serial.println("Connected to Wi-Fi");
+    Serial.print("IP address: ");
+    Serial.println(WiFi.localIP());
+
+    pinMode(IN1, OUTPUT);
+    pinMode(IN2, OUTPUT);
+    pinMode(IN3, OUTPUT);
+    pinMode(IN4, OUTPUT);
+    pinMode(ENA, OUTPUT);
+    pinMode(ENB, OUTPUT);
+    
+    stopMotors();
+}
+
+void loop() {
+    Serial.println("Moving Forward for 1.5 seconds");
+    Serial.flush();
+    moveForward();
+    delay(1750); // Move forward for 1.5 seconds
+    stopMotors();
+    delay(2500); // Stop for 2 seconds
+    
+    Serial.println("Moving Reverse for 1.5 seconds");
+    Serial.flush();
+    moveReverse();
+    delay(1650); // Move reverse for 1.5 seconds
+    stopMotors();
+    delay(2500); // Stop for 2 seconds
+
+    readAndDisplaySensors();
+}
+
+// Motor control functions
+void moveForward() {
+    analogWrite(ENA, 90);  // Speed set to 95
+    analogWrite(ENB, 90);
+    digitalWrite(IN1, HIGH);
+    digitalWrite(IN2, LOW);
+    digitalWrite(IN3, HIGH);
+    digitalWrite(IN4, LOW);
+}
+
+void moveReverse() {
+    analogWrite(ENA, 90);  // Speed set to 95
+    analogWrite(ENB, 90);
+    digitalWrite(IN1, LOW);
+    digitalWrite(IN2, HIGH);
+    digitalWrite(IN3, LOW);
+    digitalWrite(IN4, HIGH);
+}
+
+void stopMotors() {
+    digitalWrite(IN1, LOW);
+    digitalWrite(IN2, LOW);
+    digitalWrite(IN3, LOW);
+    digitalWrite(IN4, LOW);
+    analogWrite(ENA, 0);
+    analogWrite(ENB, 0);
+}
+
+// Function to read and display voltage, current, and battery percentage
+void readAndDisplaySensors() {
+    float voltage = readVoltage();
+    float current = readCurrent();
+    float batteryPercentage = calculateBatteryPercentage(voltage);
+
+    Serial.print("Voltage: ");
+    Serial.print(voltage);
+    Serial.print(" V, Current: ");
+    Serial.print(current);
+    Serial.print(" A, Battery: ");
+    Serial.print(batteryPercentage);
+    Serial.println("%");
+    Serial.flush();
+
+    checkBatteryStatus(batteryPercentage);
+
+    // Overcurrent protection
+    if (current > OVERCURRENT_LIMIT) {
+        Serial.println("Warning: Overcurrent detected! Stopping motors.");
+        Serial.flush();
+        stopMotors();
+        delay(20);
+    }
+    
+    // Send data to Firebase
+    fb.setFloat("monitor/current", current);
+    fb.setFloat("monitor/voltage", voltage);
+    fb.setFloat("monitor/percentage", batteryPercentage);
+}
+
+// Voltage Measurement
+float readVoltage() {
+    int rawADC = analogRead(VOLTAGE_SENSOR_PIN);
+    float measuredVoltage = (rawADC / 4095.0) * 3.3;  // Convert ADC to voltage
+    float batteryVoltage = measuredVoltage * VOLTAGE_SCALING_FACTOR;  // Apply scaling
+    
+    return (batteryVoltage < 1.0) ? 0.0 : batteryVoltage;
+}
+
+// Current Measurement
+float readCurrent() {
+    int rawADC = analogRead(CURRENT_SENSOR_PIN);
+    float measuredVoltage = (rawADC / 4095.0) * 3.3;  // Convert ADC to voltage
+    float current = (measuredVoltage - ACS712_ZERO) / ACS712_SENSITIVITY; // Convert to current
+    
+    return (current < 0.6) ? 0.0 : current;
+}
+
+// Battery percentage calculation
+float calculateBatteryPercentage(float voltage) {
+    if (voltage >= BATTERY_FULL_VOLTAGE) return 100.0;
+    if (voltage <= BATTERY_EMPTY_VOLTAGE) return 0.0;
+    return ((voltage - BATTERY_EMPTY_VOLTAGE) / (BATTERY_FULL_VOLTAGE - BATTERY_EMPTY_VOLTAGE)) * 100.0;
+}
+
+// Battery warnings
+void checkBatteryStatus(float batteryPercentage) {
+    if (batteryPercentage <= 25.0) {
+        Serial.println("Warning: Battery low! Please charge.");
+        Serial.flush();
+    }
+    if (batteryPercentage >= 95.0) {
+        Serial.println("Battery is full (95%). Stop charging.");
+        Serial.flush();
+    }
+}
