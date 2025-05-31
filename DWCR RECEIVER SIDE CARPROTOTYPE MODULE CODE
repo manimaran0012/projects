@@ -32,8 +32,8 @@ Firebase fb(FIREBASE_URL);
 #define OVERCURRENT_LIMIT 3.5  
 
 // Wi-Fi credentials
-const char* ssid = "Deepak' s device";        // Replace with your WiFi SSID 
-const char* password = "Deepak@123";          // Replace with your WiFi password
+const char* ssid = "Galaxy F6292c9";        // Replace with your WiFi SSID 
+const char* password = "dxwm3987";          // Replace with your WiFi password
 
 void setup() {
     Serial.begin(115200);
