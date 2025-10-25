@@ -1,0 +1,62 @@
+#include <WiFi.h>
+#include <Firebase.h>
+
+#define FIREBASE_URL "https://solar-home-automation-default-rtdb.firebaseio.com/"
+Firebase fb(FIREBASE_URL);
+
+const char* ssid = "Infinix HOT 30 5G";
+const char* password = "mani00122";
+
+#define RELAY1 25
+#define RELAY2 26
+#define RELAY3 27
+
+unsigned long previousMillis = 0;
+const long interval = 300; // check Firebase every 300ms
+
+void setup() {
+  Serial.begin(115200);
+
+  WiFi.begin(ssid, password);
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.println("Connecting Wi-Fi...");
+  }
+  Serial.println("Wi-Fi Connected");
+
+  pinMode(RELAY1, OUTPUT);
+  pinMode(RELAY2, OUTPUT);
+  pinMode(RELAY3, OUTPUT);
+
+  digitalWrite(RELAY1, HIGH);
+  digitalWrite(RELAY2, HIGH);
+  digitalWrite(RELAY3, HIGH);
+}
+
+void loop() {
+  unsigned long currentMillis = millis();
+  if (currentMillis - previousMillis >= interval) {
+    previousMillis = currentMillis;
+
+    String jsonData = "";
+    if(fb.getString("SOLAR_HOME_AUTOMATION", jsonData)) {
+      // jsonData contains something like: {"Switch1":"ON","Switch2":"OFF","Switch3":"ON"}
+
+      // Extract values using simple parsing
+      String sw1 = jsonData.substring(jsonData.indexOf("Switch1\":\"") + 10, jsonData.indexOf("\",\"Switch2"));
+      String sw2 = jsonData.substring(jsonData.indexOf("Switch2\":\"") + 10, jsonData.indexOf("\",\"Switch3"));
+      String sw3 = jsonData.substring(jsonData.indexOf("Switch3\":\"") + 10, jsonData.indexOf("\"}"));
+
+      // Control relays
+      digitalWrite(RELAY1, sw1 == "ON" ? LOW : HIGH);
+      digitalWrite(RELAY2, sw2 == "ON" ? LOW : HIGH);
+      digitalWrite(RELAY3, sw3 == "ON" ? LOW : HIGH);
+
+      Serial.print("Switch1: "); Serial.print(sw1);
+      Serial.print(" | Switch2: "); Serial.print(sw2);
+      Serial.print(" | Switch3: "); Serial.println(sw3);
+    } else {
+      Serial.println("Failed to read Firebase");
+    }
+  }
+}
