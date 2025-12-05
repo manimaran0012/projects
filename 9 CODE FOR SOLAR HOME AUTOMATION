@@ -1,0 +1,234 @@
+#include <Wire.h>
+#include <WiFi.h>
+#include <Firebase.h>
+#include <Adafruit_INA219.h>
+
+// ==============================
+// 🔹 Firebase Database URL
+// ==============================
+#define FIREBASE_URL "https://solarproject-92dff-default-rtdb.firebaseio.com/"
+Firebase fb(FIREBASE_URL);
+
+// ==============================
+// 🔹 Wi-Fi Credentials
+// ==============================
+const char* ssids[] = {"Infinix HOT 30 5G", "Galaxy F6292c9", "DESKTOP-LA7NV8S 3011"};
+const char* passwords[] = {"mani00122", "dxwm3987", "manimaran"};
+const int WIFI_COUNT = 3;
+
+// ==============================
+// 🔹 Relay Pins (LOW-level trigger)
+// ==============================
+#define RELAY1 25    // FAN
+#define RELAY2 26    // LIGHT1
+#define RELAY3 27    // LIGHT2
+#define RELAY4 32    // MOTOR_PUMP  << ADDED
+
+// ==============================
+// 🔹 INA219 (I2C)
+// ==============================
+Adafruit_INA219 ina219;
+bool ina219Found = false;
+
+// Store previous valid sensor values
+float prevVoltage = 0.0;
+float prevCurrent = 0.0;
+float prevPower = 0.0;
+float prevBattery = 0.0;
+
+// ==============================
+// 🔹 Energy Used Variables (Wh)
+// ==============================
+float energyUsed_Wh = 0.0;
+unsigned long lastEnergyTime = 0;
+
+// ==============================
+// 🔹 Timers
+// ==============================
+unsigned long previousMillis = 0;
+unsigned long sensorMillis = 0;
+const long firebaseInterval = 500;   
+const long sensorInterval = 2000;    
+
+// =============================================================
+// 🔹 SETUP
+// =============================================================
+void setup() {
+  Serial.begin(115200);
+  Wire.begin(21, 22);
+
+  connectToWiFi();
+
+  pinMode(RELAY1, OUTPUT);
+  pinMode(RELAY2, OUTPUT);
+  pinMode(RELAY3, OUTPUT);
+  pinMode(RELAY4, OUTPUT);
+
+  digitalWrite(RELAY1, HIGH);
+  digitalWrite(RELAY2, HIGH);
+  digitalWrite(RELAY3, HIGH);
+  digitalWrite(RELAY4, HIGH);
+
+  if (ina219.begin()) {
+    ina219.setCalibration_32V_2A();
+    ina219Found = true;
+    Serial.println("✅ INA219 Sensor Detected and Initialized");
+  } else {
+    ina219Found = false;
+    Serial.println("⚠️ INA219 Sensor NOT Detected!");
+  }
+
+  lastEnergyTime = millis();
+  Serial.println("✅ Setup Complete! Monitoring started...");
+}
+
+// =============================================================
+// 🔹 LOOP
+// =============================================================
+void loop() {
+  unsigned long currentMillis = millis();
+
+  // --- Firebase Relay Update ---
+  if (currentMillis - previousMillis >= firebaseInterval) {
+    previousMillis = currentMillis;
+    updateRelaysFromFirebase();
+  }
+
+  // --- INA219 Sensor Read/Upload ---
+  if (currentMillis - sensorMillis >= sensorInterval) {
+    sensorMillis = currentMillis;
+
+    if (ina219Found) {
+      readAndUploadINA219();
+    } else {
+      if (ina219.begin()) {
+        ina219.setCalibration_32V_2A();
+        ina219Found = true;
+        Serial.println("✅ INA219 Sensor Reconnected!");
+        readAndUploadINA219();
+      } else {
+        Serial.println("⚠️ INA219 Missing — Using Previous Values");
+        sendPreviousSensorData();
+      }
+    }
+  }
+}
+
+// =============================================================
+// 🔹 FUNCTION: Update Relays Based on Firebase Data
+// =============================================================
+void updateRelaysFromFirebase() {
+  String fan = "", light1 = "", light2 = "", pump = "";
+
+  if (fb.getString("SOLAR_HOME_AUTOMATION/FAN", fan) &&
+      fb.getString("SOLAR_HOME_AUTOMATION/LIGHT1", light1) &&
+      fb.getString("SOLAR_HOME_AUTOMATION/LIGHT2", light2) &&
+      fb.getString("SOLAR_HOME_AUTOMATION/MOTOR_PUMP", pump)) {
+
+    fan.trim(); fan.replace("\"", "");
+    light1.trim(); light1.replace("\"", "");
+    light2.trim(); light2.replace("\"", "");
+    pump.trim(); pump.replace("\"", "");
+
+    Serial.printf("FIREBASE -> FAN:%s | LIGHT1:%s | LIGHT2:%s | MOTOR_PUMP:%s\n",
+                  fan.c_str(), light1.c_str(), light2.c_str(), pump.c_str());
+
+    digitalWrite(RELAY1, fan.equalsIgnoreCase("true") ? LOW : HIGH);
+    digitalWrite(RELAY2, light1.equalsIgnoreCase("true") ? LOW : HIGH);
+    digitalWrite(RELAY3, light2.equalsIgnoreCase("true") ? LOW : HIGH);
+    digitalWrite(RELAY4, pump.equalsIgnoreCase("true") ? LOW : HIGH);
+
+  } else {
+    Serial.println("⚠️ Failed to read Firebase control data!");
+  }
+}
+
+// =============================================================
+// 🔹 FUNCTION: Read INA219 Data and Upload to Firebase
+// =============================================================
+void readAndUploadINA219() {
+  float busVoltage = ina219.getBusVoltage_V();
+  float current_mA = ina219.getCurrent_mA();
+  float power_mW = ina219.getPower_mW();
+
+  float current_A = current_mA / 1000.0;
+  float power_W = power_mW / 1000.0;
+
+  // --- Battery percentage for 3S ---
+  float percent = (busVoltage - 9.6) * 100 / (12.6 - 9.6);
+  if (percent > 100) percent = 100;
+  if (percent < 0) percent = 0;
+
+  // ---------- ENERGY USED (Wh) CALCULATION ----------
+  unsigned long now = millis();
+  float hoursPassed = (now - lastEnergyTime) / 3600000.0;  
+  energyUsed_Wh += power_W * hoursPassed;
+  lastEnergyTime = now;
+
+  // Print values
+  Serial.println("------------------------------------------");
+  Serial.printf("VOLTAGE : %.2f V\n", busVoltage);
+  Serial.printf("CURRENT : %.3f A\n", current_A);
+  Serial.printf("POWER : %.3f W\n", power_W);
+  Serial.printf("ENERGY_USED : %.3f Wh\n", energyUsed_Wh);
+  Serial.printf("BATTERY_PERCENTAGE : %.1f %%\n", percent);
+  Serial.println("------------------------------------------\n");
+
+  // Save last known values
+  prevVoltage = busVoltage;
+  prevCurrent = current_A;
+  prevPower = power_W;
+  prevBattery = percent;
+
+  // Upload to Firebase
+  fb.setFloat("SOLAR_HOME_AUTOMATION/VOLTAGE", busVoltage);
+  fb.setFloat("SOLAR_HOME_AUTOMATION/CURRENT", current_A);
+  fb.setFloat("SOLAR_HOME_AUTOMATION/POWER", power_W);
+  fb.setFloat("SOLAR_HOME_AUTOMATION/BATTERY_PERCENTAGE", percent);
+  fb.setFloat("SOLAR_HOME_AUTOMATION/ENERGY_USED", energyUsed_Wh);
+}
+
+// =============================================================
+// 🔹 FUNCTION: Send Previous Sensor Data
+// =============================================================
+void sendPreviousSensorData() {
+  fb.setFloat("SOLAR_HOME_AUTOMATION/VOLTAGE", prevVoltage);
+  fb.setFloat("SOLAR_HOME_AUTOMATION/CURRENT", prevCurrent);
+  fb.setFloat("SOLAR_HOME_AUTOMATION/POWER", prevPower);
+  fb.setFloat("SOLAR_HOME_AUTOMATION/BATTERY_PERCENTAGE", prevBattery);
+  fb.setFloat("SOLAR_HOME_AUTOMATION/ENERGY_USED", energyUsed_Wh);
+}
+
+// =============================================================
+// 🔹 FUNCTION: Connect to Wi-Fi Automatically
+// =============================================================
+void connectToWiFi() {
+  Serial.println("Scanning Wi-Fi...");
+  int n = WiFi.scanNetworks();
+  if (n == 0) {
+    Serial.println("⚠️ No networks found!");
+    return;
+  }
+
+  for (int i = 0; i < WIFI_COUNT; i++) {
+    for (int j = 0; j < n; j++) {
+      if (String(WiFi.SSID(j)) == ssids[i]) {
+        Serial.print("Connecting to "); Serial.println(ssids[i]);
+        WiFi.begin(ssids[i], passwords[i]);
+        int attempts = 0;
+        while (WiFi.status() != WL_CONNECTED && attempts < 20) {
+          delay(500);
+          Serial.print(".");
+          attempts++;
+        }
+        if (WiFi.status() == WL_CONNECTED) {
+          Serial.println("\n✅ Wi-Fi Connected! IP: " + WiFi.localIP().toString());
+          return;
+        } else {
+          Serial.println("\nFailed to connect, trying next...");
+        }
+      }
+    }
+  }
+  Serial.println("⚠️ No known Wi-Fi found.");
+}
